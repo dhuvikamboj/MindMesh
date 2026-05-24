@@ -1,50 +1,136 @@
-# Welcome to your Expo app 👋
+# MindMesh
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A local AI-powered knowledge management app for iOS and Android. All inference runs on-device — no server, no account, no data leaving your phone.
 
-## Get started
+## What it does
 
-1. Install dependencies
+- **Chat with an on-device LLM.** Pick from 10 open-weight models (Gemma 4, Qwen3, Qwen2.5, Phi-4, Llama 3.2, SmolLM2) ranging from 847 MB to 4.1 GB.
+- **Builds a knowledge base from conversation.** The assistant autonomously saves notes, edits them, links related ideas, and stores persistent facts about you — all through tool calls, no manual filing.
+- **Retrieval-Augmented Generation.** Every message is embedded using Nomic Embed Text v1.5 and matched against your knowledge base before inference, so the model always has relevant context.
+- **Mind map.** Force-directed graph of knowledge items connected by semantic similarity.
+- **Share from anywhere.** iOS share extension and Android intent filter pipe content from any app into MindMesh's inbox.
+- **@mention notes in chat.** Type `@` in the composer to search and reference a note inline. Tap the chip in a message bubble to open it.
+- **Periodic knowledge digest.** Configurable interval digest surfaces forgotten notes and suggests connections.
+- **Everything stays local.** SQLite database, vector index, and model weights all live in the app's sandboxed storage.
 
-   ```bash
-   npm install
-   ```
+## Tech stack
 
-2. Start the app
+| Layer | Technology |
+|---|---|
+| Framework | React Native, Expo SDK 54, Expo Router 4 |
+| On-device LLM | llama.rn 0.12.0-rc.9 (llama.cpp bindings) |
+| Embedding model | Nomic Embed Text v1.5 Q4_K_M (84 MB) |
+| Database | op-sqlite 16.1.0 + sqlite-vec (vector search) |
+| Model format | GGUF Q4_K_M quantization |
+| Share extension | Swift ShareViewController (iOS) + ACTION_SEND intent (Android) |
 
-   ```bash
-   npx expo start
-   ```
+## Model catalog
 
-In the output, you'll find options to open the app in a
+| Model | Params | Size | Notable |
+|---|---|---|---|
+| Gemma 4 E2B | 2B | 3.1 GB + 986 MB | Vision support (default) |
+| Qwen3 1.7B | 1.7B | 1.1 GB | Fast + reasoning |
+| Qwen3 4B | 4B | 2.7 GB | Best quality ≤ 4B |
+| Qwen2.5 1.5B Instruct | 1.5B | 986 MB | Fast, strong tool use |
+| Qwen2.5 3B Instruct | 3B | 1.9 GB | Multilingual |
+| Phi-4 Mini Instruct | 3.8B | 2.5 GB | Top benchmark at ≤ 4B |
+| Phi-4 Mini Reasoning | 3.8B | 2.5 GB | Chain-of-thought variant |
+| Llama 3.2 1B Instruct | 1B | 847 MB | Fastest, works on older devices |
+| Llama 3.2 3B Instruct | 3B | 2.2 GB | General assistant |
+| SmolLM2 1.7B Instruct | 1.7B | 1.0 GB | Apache 2.0, HuggingFace |
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Requirements
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+- Node.js 20 LTS
+- Expo CLI
+- **iOS:** Xcode 16+, CocoaPods
+- **Android:** Android Studio with NDK 27.1.12297006 and SDK Platform 34
 
-## Get a fresh project
-
-When you're ready, run:
+## Setup
 
 ```bash
-npm run reset-project
+git clone <repo>
+cd MindMesh
+npm install
+
+# iOS
+cd ios && LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 pod install --project-directory=. && cd ..
+npx expo run:ios --device
+
+# Android
+npx expo run:android --device
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+> **Android NDK:** If the build hangs downloading the NDK, install NDK `27.1.12297006` manually via Android Studio → SDK Manager → SDK Tools → NDK (Side by side).
 
-## Learn more
+## iOS share extension — one manual step
 
-To learn more about developing your project with Expo, look at the following resources:
+The share extension requires an App Groups capability that must be added in Xcode:
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+1. Open `ios/MindMesh.xcworkspace`
+2. Select the **MindMesh** target → Signing & Capabilities → **+ Capability** → App Groups
+3. Add `group.com.dhuviads.MindMesh.share`
+4. Repeat for the **MindMeshShare** target
 
-## Join the community
+See [`docs/SHARE_EXTENSION_SETUP.md`](docs/SHARE_EXTENSION_SETUP.md) for full instructions.
 
-Join our community of developers creating universal apps.
+## Project structure
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```
+app/                    # Expo Router routes
+  _layout.tsx           # Root layout + provider tree
+  index.tsx             # Onboarding gate
+  chat.tsx / library.tsx / map.tsx / sessions.tsx
+  settings.tsx / models.tsx / inbox.tsx / item/[id].tsx
+
+components/screens/     # Full-screen React components
+contexts/
+  AssistantContext.tsx   # Central AI state + service orchestrator
+  ShareIntentContext.tsx
+
+hooks/
+  useChatSessions.ts    # Session + turn CRUD
+  useDigest.ts          # Periodic knowledge digest
+  useEmbedder.ts        # Nomic embed model lifecycle
+  useKnowledgeBase.ts   # Knowledge item CRUD
+  useKnowledgeSearch.ts # RAG retrieval + embedding storage
+  useLlama.ts           # llama.rn lifecycle + streaming
+  useMemory.ts          # User fact storage + recall
+
+lib/
+  agent.ts              # Tool definitions (9 tools) + system prompt
+  db.ts                 # SQLite init, schema, sqlite-vec, migration
+  modelCatalog.ts       # 10-model catalog
+  modelStorage.ts       # GGUF download + validation
+  theme.ts              # Design tokens
+
+ios/MindMeshShare/      # Swift share extension
+android/app/src/main/   # AndroidManifest with intent filters
+```
+
+## Agent tools
+
+The assistant has nine tools it calls autonomously:
+
+| Tool | Purpose |
+|---|---|
+| `create_note` | Save a new knowledge item |
+| `search_notes` | Semantic search over the knowledge base |
+| `read_note` | Fetch full content of a note by ID |
+| `edit_note` | Replace or append to a note |
+| `link_notes` | Connect two notes in the mind map |
+| `save_memory` | Persist a lasting fact about the user |
+| `recall_memory` | Retrieve saved facts by query |
+| `create_file` | Write a text/markdown file and attach it as a note |
+| `update_profile` | Rewrite the persistent user profile in context |
+
+## Known limitations
+
+- **4 GB devices:** Models ≥ 2.5 GB may be terminated by the OS under memory pressure. Stick to ≤ 1.7 B models on 4 GB RAM devices.
+- **No background inference:** iOS suspends CPU-heavy work when the app is backgrounded mid-generation.
+- **Vision only on Gemma 4 E2B:** The mmproj file (986 MB) is required. Other models are text-only.
+- **Audio/image items:** No on-device OCR or speech-to-text yet. Transcript must be entered manually or via the AI after the model reviews an image.
+
+## License
+
+MIT
