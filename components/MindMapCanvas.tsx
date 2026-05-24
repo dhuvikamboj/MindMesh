@@ -6,6 +6,8 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   type Simulation,
 } from 'd3-force';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -41,10 +43,11 @@ export function MindMapCanvas({ edges, nodes, selectedId, onSelect }: Props) {
       return;
     }
 
+    const spread = Math.min(260, 60 + nodes.length * 18);
     const simNodes: SimNode[] = nodes.map((node, index) => ({
       ...node,
-      x: CANVAS_W / 2 + Math.cos((index / nodes.length) * 2 * Math.PI) * 80,
-      y: CANVAS_H / 2 + Math.sin((index / nodes.length) * 2 * Math.PI) * 80,
+      x: CANVAS_W / 2 + Math.cos((index / nodes.length) * 2 * Math.PI) * spread,
+      y: CANVAS_H / 2 + Math.sin((index / nodes.length) * 2 * Math.PI) * spread,
     }));
     const simLinks = edges.map((edge) => ({
       source: edge.from as unknown as SimNode,
@@ -54,6 +57,8 @@ export function MindMapCanvas({ edges, nodes, selectedId, onSelect }: Props) {
 
     layoutRef.current = { nodes: simNodes, links: simLinks };
 
+    const padding = NODE_R + 20;
+
     const simulation = forceSimulation(simNodes)
       .force(
         'link',
@@ -62,12 +67,21 @@ export function MindMapCanvas({ edges, nodes, selectedId, onSelect }: Props) {
           .distance(150)
           .strength(0.7)
       )
-      .force('charge', forceManyBody().strength(-340))
+      .force('charge', forceManyBody().strength(-300))
       .force('center', forceCenter(CANVAS_W / 2, CANVAS_H / 2))
+      .force('x', forceX(CANVAS_W / 2).strength(0.06))
+      .force('y', forceY(CANVAS_H / 2).strength(0.06))
       .force('collide', forceCollide(NODE_R + 14))
       .alpha(1)
       .alphaDecay(0.035)
-      .on('tick', () => forceRender((tick) => tick + 1));
+      .on('tick', () => {
+        // Hard-clamp every node inside canvas bounds so none escape off-screen.
+        for (const node of simNodes) {
+          node.x = Math.max(padding, Math.min(CANVAS_W - padding, node.x));
+          node.y = Math.max(padding, Math.min(CANVAS_H - padding, node.y));
+        }
+        forceRender((tick) => tick + 1);
+      });
 
     simRef.current = simulation;
 
@@ -83,6 +97,23 @@ export function MindMapCanvas({ edges, nodes, selectedId, onSelect }: Props) {
   const baseScale = useSharedValue(1);
   const baseTx = useSharedValue(0);
   const baseTy = useSharedValue(0);
+
+  // Re-center whenever the node set changes.
+  useEffect(() => {
+    centeredRef.current = false;
+  }, [nodes]);
+
+  // Center the canvas in the container on first layout.
+  const centeredRef = useRef(false);
+  const handleLayout = (event: { nativeEvent: { layout: { width: number; height: number } } }) => {
+    if (centeredRef.current) return;
+    centeredRef.current = true;
+    const { width, height } = event.nativeEvent.layout;
+    tx.value = width / 2 - CANVAS_W / 2;
+    ty.value = height / 2 - CANVAS_H / 2;
+    baseTx.value = tx.value;
+    baseTy.value = ty.value;
+  };
 
   const pinchGesture = Gesture.Pinch()
     .onStart(() => {
@@ -124,7 +155,7 @@ export function MindMapCanvas({ edges, nodes, selectedId, onSelect }: Props) {
   const layout = layoutRef.current;
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} onLayout={handleLayout}>
       <GestureDetector gesture={composed}>
         <Animated.View style={[styles.viewport, viewportStyle]}>
           <Svg width={CANVAS_W} height={CANVAS_H}>

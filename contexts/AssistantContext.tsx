@@ -86,6 +86,12 @@ function useAssistantWorkspace() {
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [pendingLinkSuggestion, setPendingLinkSuggestion] = useState<LinkSuggestion | null>(null);
+  const [pendingImageAttachment, setPendingImageAttachment] = useState<{
+    noteId: string;
+    noteTitle: string;
+    availableImages: string[];
+  } | null>(null);
+  const imageAttachResolveRef = useRef<((uris: string[]) => void) | null>(null);
   const didAutoLoadRef = useRef(false);
 
   useEffect(() => {
@@ -416,7 +422,8 @@ function useAssistantWorkspace() {
 
   const runAgentTool = async (
     tool: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    context?: { imageUris?: string[] }
   ): Promise<{ observation: string; displayText: string }> => {
     const asString = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
 
@@ -424,10 +431,38 @@ function useAssistantWorkspace() {
       const title = asString(args.title) || 'Untitled note';
       const content = asString(args.content) || title;
       const item = await knowledge.addQuickNote({ title, body: content });
-      // Embed in background — don't await (would block agent loop).
-      embedAndStoreItem(item).then(() => checkAutoLink(item)).catch(() => undefined);
+
+      // Collect all unique image URIs from the current session turns.
+      const sessionImages = Array.from(
+        new Set(
+          chat.currentTurns.flatMap((turn) => turn.imageUris ?? []).filter(Boolean)
+        )
+      );
+
+      let attachedUris: string[] = [];
+      if (sessionImages.length > 0) {
+        // Pause the agent loop and ask the user which images to attach.
+        attachedUris = await new Promise<string[]>((resolve) => {
+          imageAttachResolveRef.current = resolve;
+          setPendingImageAttachment({
+            noteId: item.id,
+            noteTitle: item.title,
+            availableImages: sessionImages,
+          });
+        });
+      }
+
+      if (attachedUris.length > 0) {
+        knowledge.updateItem(item.id, { sourceUri: attachedUris[0], type: 'image' });
+      }
+
+      // Embed in background.
+      embedAndStoreItem({ ...item, sourceUri: attachedUris[0] ?? item.sourceUri })
+        .then(() => checkAutoLink(item))
+        .catch(() => undefined);
+
       return {
-        observation: `Created note "${item.title}" with id ${item.id}.`,
+        observation: `Created note "${item.title}" with id ${item.id}.${attachedUris.length > 0 ? ` ${attachedUris.length} image(s) attached.` : ''}`,
         displayText: `Created note "${item.title}"`,
       };
     }
@@ -748,7 +783,11 @@ function useAssistantWorkspace() {
           } catch {
             args = {};
           }
-          const { observation, displayText } = await runAgentTool(call.function.name, args);
+          const { observation, displayText } = await runAgentTool(
+            call.function.name,
+            args,
+            { imageUris: cleanImages }
+          );
           chat.appendTurn({
             id: `t-${Date.now()}-${step}-${i}`,
             role: 'tool',
@@ -834,6 +873,12 @@ function useAssistantWorkspace() {
 
   const dismissLinkSuggestion = () => setPendingLinkSuggestion(null);
 
+  const resolveImageAttachment = (uris: string[]) => {
+    imageAttachResolveRef.current?.(uris);
+    imageAttachResolveRef.current = null;
+    setPendingImageAttachment(null);
+  };
+
   const askWorkspacePlan = async () => {
     if (!model.isReady || model.isLoading) {
       return null;
@@ -882,6 +927,9 @@ function useAssistantWorkspace() {
     pendingLinkSuggestion,
     acceptLinkSuggestion,
     dismissLinkSuggestion,
+    // Image attachment prompt
+    pendingImageAttachment,
+    resolveImageAttachment,
     // Model & agent settings
     modelSettings: modelSettings.settings,
     isSettingsLoaded: modelSettings.isSettingsLoaded,

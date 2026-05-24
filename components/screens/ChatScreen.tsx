@@ -52,25 +52,27 @@ export function ChatScreen() {
   const [pendingFile, setPendingFile] = useState<PendingFile | null>(null);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [selectedAttachUris, setSelectedAttachUris] = useState<string[]>([]);
   const inputRef = useRef<TextInput>(null);
 
   // Note mention autocomplete — triggered by @ at end of draft
   const mentionResults = useMemo(() => {
     if (mentionQuery === null) return [];
     const q = mentionQuery.toLowerCase();
-    return assistant.readyItems
+    return assistant.items
       .filter((item) => item.title.toLowerCase().includes(q))
       .slice(0, 6);
-  }, [mentionQuery, assistant.readyItems]);
+  }, [mentionQuery, assistant.items]);
 
   const handleDraftChange = useCallback((text: string) => {
     setDraft(text);
-    const m = text.match(/@(\w*)$/);
+    // Match @ followed by any non-whitespace chars at end of string.
+    const m = text.match(/@([^\s]*)$/);
     setMentionQuery(m ? m[1] : null);
   }, []);
 
   const insertMention = useCallback((item: KnowledgeItem) => {
-    const newDraft = draft.replace(/@\w*$/, `@[${item.title}](${item.id}) `);
+    const newDraft = draft.replace(/@[^\s]*$/, `@[${item.title}](${item.id}) `);
     setDraft(newDraft);
     setMentionQuery(null);
     inputRef.current?.focus();
@@ -354,6 +356,63 @@ export function ChatScreen() {
             <Pressable onPress={() => assistant.dismissLinkSuggestion()} hitSlop={8}>
               <Ionicons name="close" size={16} color={palette.textSubtle} />
             </Pressable>
+          </View>
+        ) : null}
+
+        {/* Image attachment prompt — shown when agent creates a note and session has images */}
+        {assistant.pendingImageAttachment ? (
+          <View style={styles.imageAttachPanel}>
+            <Text style={styles.imageAttachTitle}>
+              Attach images to "{assistant.pendingImageAttachment.noteTitle}"?
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.imageAttachScroll}
+              contentContainerStyle={styles.imageAttachRow}>
+              {assistant.pendingImageAttachment.availableImages.map((uri) => {
+                const selected = selectedAttachUris.includes(uri);
+                return (
+                  <Pressable
+                    key={uri}
+                    onPress={() =>
+                      setSelectedAttachUris((prev) =>
+                        selected ? prev.filter((u) => u !== uri) : [...prev, uri]
+                      )
+                    }
+                    style={[styles.imageAttachThumb, selected && styles.imageAttachThumbSelected]}>
+                    <Image source={{ uri }} style={styles.imageAttachImg} resizeMode="cover" />
+                    {selected ? (
+                      <View style={styles.imageAttachCheck}>
+                        <Ionicons name="checkmark" size={14} color="#fff" />
+                      </View>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <View style={styles.imageAttachActions}>
+              <Pressable
+                style={styles.infoBarAction}
+                onPress={() => {
+                  assistant.resolveImageAttachment(selectedAttachUris);
+                  setSelectedAttachUris([]);
+                }}>
+                <Text style={styles.infoBarActionText}>
+                  {selectedAttachUris.length > 0
+                    ? `Attach ${selectedAttachUris.length}`
+                    : 'Attach none'}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  assistant.resolveImageAttachment([]);
+                  setSelectedAttachUris([]);
+                }}
+                hitSlop={8}>
+                <Text style={styles.imageAttachSkip}>Skip</Text>
+              </Pressable>
+            </View>
           </View>
         ) : null}
 
@@ -803,6 +862,56 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   infoBarActionText: { fontSize: 12, fontWeight: '700', color: palette.inverse },
+  imageAttachPanel: {
+    backgroundColor: palette.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: space.md,
+    gap: space.sm,
+    marginBottom: space.sm,
+  },
+  imageAttachTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: palette.text,
+  },
+  imageAttachScroll: { flexGrow: 0 },
+  imageAttachRow: { gap: space.sm, paddingBottom: 2 },
+  imageAttachThumb: {
+    width: 72,
+    height: 72,
+    borderRadius: radius.sm,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: palette.border,
+  },
+  imageAttachThumbSelected: {
+    borderColor: palette.accent,
+    borderWidth: 2.5,
+  },
+  imageAttachImg: { width: '100%', height: '100%' },
+  imageAttachCheck: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: palette.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imageAttachActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+  },
+  imageAttachSkip: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: palette.textSubtle,
+  },
   pendingRow: {
     flexDirection: 'row',
     alignItems: 'center',
