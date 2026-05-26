@@ -285,7 +285,8 @@ export function ChatScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior="padding"
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}>
         {/* Top bar */}
         <View style={styles.topBar}>
           <View style={styles.headerLeft}>
@@ -550,8 +551,8 @@ export function ChatScreen() {
             <Ionicons name="arrow-up" size={20} color={palette.inverse} />
           </Pressable>
         </View>
+        <TabBar active="chat" />
       </KeyboardAvoidingView>
-      <TabBar active="chat" />
     </SafeAreaView>
   );
 }

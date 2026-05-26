@@ -6,6 +6,7 @@ const MODEL_DIR_URI = `${ROOT_URI}/models`;
 const LIBRARY_FILE_URI = `${ROOT_URI}/library.json`;
 const MEMORY_FILE_URI = `${ROOT_URI}/memory.json`;
 const SESSIONS_FILE_URI = `${ROOT_URI}/sessions.json`;
+const DOWNLOAD_STATE_FILE_URI = `${ROOT_URI}/download-state.json`;
 
 export const storagePaths = {
   root: ROOT_URI,
@@ -14,6 +15,7 @@ export const storagePaths = {
   library: LIBRARY_FILE_URI,
   memory: MEMORY_FILE_URI,
   sessions: SESSIONS_FILE_URI,
+  downloadState: DOWNLOAD_STATE_FILE_URI,
 };
 
 export const ensureStorageDirectories = async () => {
@@ -44,6 +46,10 @@ export const writeStoredJson = async (uri: string, value: unknown) => {
   await FileSystem.writeAsStringAsync(uri, JSON.stringify(value, null, 2), {
     encoding: FileSystem.EncodingType.UTF8,
   });
+};
+
+export const deleteStoredFile = async (uri: string) => {
+  await FileSystem.deleteAsync(uri, { idempotent: true });
 };
 
 export const copyAssetToStorage = async (from: string, name: string) => {

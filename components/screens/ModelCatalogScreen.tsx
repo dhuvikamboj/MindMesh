@@ -19,12 +19,23 @@ import { palette, radius, space, fontSize, fontWeight, shadow } from '@/lib/them
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Minimum bytes a file must have to be considered a completed download. */
 const MIN_VALID_BYTES = 1024 * 1024;
+/**
+ * Tolerance for size comparison: catalog sizeBytes are display estimates
+ * (rounded MB), not exact byte counts.  Use 10 % to absorb rounding error.
+ * A file within 10 % of estimated size is almost certainly the full download.
+ */
+const SIZE_TOLERANCE = 0.10;
 
 async function isFullyDownloaded(bundle: RuntimeModelBundle): Promise<boolean> {
   for (const artifact of bundle.artifacts) {
-    const info = await FileSystem.getInfoAsync(getModelArtifactUri(artifact.fileName));
-    if (!info.exists || ((info as { size?: number }).size ?? 0) < MIN_VALID_BYTES) return false;
+    const info = await FileSystem.getInfoAsync(getModelArtifactUri(artifact.fileName), { size: true } as never);
+    if (!info.exists) return false;
+    const actual = (info as { size?: number }).size ?? 0;
+    if (actual < MIN_VALID_BYTES) return false;
+    // Only compare against expected size when we have a non-trivial estimate.
+    if (artifact.sizeBytes > 0 && actual < artifact.sizeBytes * (1 - SIZE_TOLERANCE)) return false;
   }
   return true;
 }

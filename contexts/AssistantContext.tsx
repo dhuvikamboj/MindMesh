@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
 import { useChatSessions } from '@/hooks/useChatSessions';
@@ -21,7 +22,16 @@ import { AGENT_TOOLS, buildAgentSystemPrompt } from '@/lib/agent';
 import { DEFAULT_EMBED_MODEL, DEFAULT_RUNTIME_MODEL, MODEL_CATALOG, RuntimeModelBundle } from '@/lib/modelCatalog';
 import * as FileSystem from 'expo-file-system/legacy';
 
-import { downloadModelArtifact, getModelArtifactUri, getPresentModelUri } from '@/lib/modelStorage';
+import {
+  clearDownloadSnapshot,
+  downloadModelArtifact,
+  DownloadSnapshot,
+  getModelArtifactUri,
+  getPresentModelUri,
+  loadDownloadSnapshot,
+  prefetchArtifactSizes,
+  saveDownloadSnapshot,
+} from '@/lib/modelStorage';
 import { ChatTurn } from '@/types/agent';
 import { KnowledgeItem } from '@/types/knowledge';
 
@@ -93,6 +103,46 @@ function useAssistantWorkspace() {
   } | null>(null);
   const imageAttachResolveRef = useRef<((uris: string[]) => void) | null>(null);
   const didAutoLoadRef = useRef(false);
+  const didResumeCheckRef = useRef(false);
+
+  // Auto-resume any download that was interrupted by an app kill or crash.
+  useEffect(() => {
+    if (didResumeCheckRef.current) return;
+    didResumeCheckRef.current = true;
+
+    loadDownloadSnapshot().then((snapshot) => {
+      if (!snapshot) return;
+      const bundle = MODEL_CATALOG.find((b) => b.id === snapshot.bundleId);
+      if (bundle) {
+        downloadModel(bundle, snapshot);
+      } else {
+        clearDownloadSnapshot();
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // When the app returns to foreground during an active download, update the
+  // progress bar to reflect bytes that landed while we were backgrounded.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async (nextState) => {
+      if (nextState !== 'active') return;
+      if (!isDownloadingModel || !downloadingModelId) return;
+
+      const bundle = MODEL_CATALOG.find((b) => b.id === downloadingModelId);
+      if (!bundle) return;
+
+      // Check if all artifacts arrived in the background.
+      const presenceChecks = await Promise.all(
+        bundle.artifacts.map((a) => getPresentModelUri(a.fileName, a.sizeBytes))
+      );
+      const allPresent = presenceChecks.every(Boolean);
+      if (allPresent) {
+        setDownloadProgress(1);
+      }
+    });
+    return () => sub.remove();
+  }, [isDownloadingModel, downloadingModelId]);
 
   useEffect(() => {
     if (didAutoLoadRef.current) {
@@ -103,12 +153,18 @@ function useAssistantWorkspace() {
     (async () => {
       let gemmaUri: string | null = null;
       try {
-        gemmaUri = await getPresentModelUri(DEFAULT_RUNTIME_MODEL.modelFileName);
+        gemmaUri = await getPresentModelUri(
+          DEFAULT_RUNTIME_MODEL.modelFileName,
+          DEFAULT_RUNTIME_MODEL.artifacts.find((a) => a.fileName === DEFAULT_RUNTIME_MODEL.modelFileName)?.sizeBytes ?? 0
+        );
         if (gemmaUri) {
           setStatusMessage('Loading local model.');
           const mmprojFile = DEFAULT_RUNTIME_MODEL.mmprojFileName;
           const mmprojUri = mmprojFile
-            ? (await getPresentModelUri(mmprojFile)) ?? undefined
+            ? (await getPresentModelUri(
+                mmprojFile,
+                DEFAULT_RUNTIME_MODEL.artifacts.find((a) => a.fileName === mmprojFile)?.sizeBytes ?? 0
+              )) ?? undefined
             : undefined;
           await model.initModel(gemmaUri, mmprojUri);
           setStatusMessage(
@@ -127,7 +183,10 @@ function useAssistantWorkspace() {
         return;
       }
       try {
-        let embedUri = await getPresentModelUri(DEFAULT_EMBED_MODEL.modelFileName);
+        let embedUri = await getPresentModelUri(
+          DEFAULT_EMBED_MODEL.modelFileName,
+          DEFAULT_EMBED_MODEL.artifacts[0]?.sizeBytes ?? 0
+        );
         if (!embedUri) {
           for (const artifact of DEFAULT_EMBED_MODEL.artifacts) {
             await downloadModelArtifact(artifact);
@@ -171,26 +230,96 @@ function useAssistantWorkspace() {
     }
   };
 
-  /** Download + load any catalog model. Also seeds the embed model if not yet present. */
-  const downloadModel = async (bundle: RuntimeModelBundle) => {
+  /** Download + load any catalog model. Also seeds the embed model if not yet present.
+   *  Pass a pre-loaded `snapshot` to resume an interrupted download. */
+  const downloadModel = async (bundle: RuntimeModelBundle, snapshot?: DownloadSnapshot) => {
+    // Auto-load saved snapshot for this bundle so interrupted downloads resume
+    // even when the caller doesn't pass one (e.g. user taps Download again).
+    if (!snapshot) {
+      const saved = await loadDownloadSnapshot();
+      if (saved?.bundleId === bundle.id) {
+        snapshot = saved;
+      }
+    }
+
     setIsDownloadingModel(true);
     setDownloadingModelId(bundle.id);
     setDownloadProgress(0);
     setActionError(null);
-    setStatusMessage(`Downloading ${bundle.label}…`);
+    const hasPartial = snapshot?.artifacts.some((a) => !a.completed && a.resumeData);
+    setStatusMessage(hasPartial ? `Resuming ${bundle.label}…` : `Downloading ${bundle.label}…`);
 
     try {
-      const totalBytes = bundle.artifacts.reduce((sum, a) => sum + a.sizeBytes, 0);
+      // Fetch exact sizes from server in parallel; fall back to catalog estimates.
+      setStatusMessage(`Checking ${bundle.label}…`);
+      const exactSizes = await prefetchArtifactSizes(bundle.artifacts);
+
+      const totalBytes = bundle.artifacts.reduce(
+        (sum, a) => sum + (exactSizes.get(a.fileName) ?? a.sizeBytes),
+        0
+      );
       let completedBytes = 0;
 
-      for (const artifact of bundle.artifacts) {
-        const weight = artifact.sizeBytes / totalBytes;
-        await downloadModelArtifact(artifact, (progress) => {
-          const normalized = completedBytes / totalBytes + progress * weight;
-          setDownloadProgress(Math.min(1, normalized));
+      // Build or restore per-artifact state from snapshot.
+      const artifactStates = bundle.artifacts.map((a, i) => ({
+        fileName: a.fileName,
+        sizeBytes: exactSizes.get(a.fileName) ?? a.sizeBytes,
+        completed: snapshot?.artifacts[i]?.completed ?? false,
+        resumeData: snapshot?.artifacts[i]?.resumeData,
+      }));
+
+      // Persist initial snapshot so a crash/kill is recoverable.
+      await saveDownloadSnapshot({
+        bundleId: bundle.id,
+        bundleLabel: bundle.label,
+        totalBytes,
+        artifacts: artifactStates,
+      });
+
+      const hasPartialResume = artifactStates.some((a) => !a.completed && a.resumeData);
+      setStatusMessage(hasPartialResume ? `Resuming ${bundle.label}…` : `Downloading ${bundle.label}…`);
+
+      for (let i = 0; i < bundle.artifacts.length; i++) {
+        const artifact = bundle.artifacts[i];
+        const state = artifactStates[i];
+
+        if (state.completed) {
+          // Already done in a prior run — skip, count bytes.
+          completedBytes += state.sizeBytes;
+          setDownloadProgress(Math.min(1, completedBytes / totalBytes));
+          continue;
+        }
+
+        const weight = state.sizeBytes / totalBytes;
+
+        await downloadModelArtifact(artifact, {
+          resumeData: state.resumeData,
+          onProgress: (progress) => {
+            const normalized = completedBytes / totalBytes + progress * weight;
+            setDownloadProgress(Math.min(1, normalized));
+          },
+          onSavable: async (resumeData) => {
+            artifactStates[i].resumeData = resumeData;
+            await saveDownloadSnapshot({
+              bundleId: bundle.id,
+              bundleLabel: bundle.label,
+              totalBytes,
+              artifacts: artifactStates,
+            });
+          },
         });
-        completedBytes += artifact.sizeBytes;
+
+        // Mark complete and persist.
+        artifactStates[i].completed = true;
+        artifactStates[i].resumeData = undefined;
+        completedBytes += state.sizeBytes;
         setDownloadProgress(Math.min(1, completedBytes / totalBytes));
+        await saveDownloadSnapshot({
+          bundleId: bundle.id,
+          bundleLabel: bundle.label,
+          totalBytes,
+          artifacts: artifactStates,
+        });
       }
 
       const modelUri = getModelArtifactUri(bundle.modelFileName);
@@ -202,7 +331,10 @@ function useAssistantWorkspace() {
       setStatusMessage(`Loaded ${bundle.label}.`);
 
       // Seed embed model silently if not present yet.
-      const embedUri = await getPresentModelUri(DEFAULT_EMBED_MODEL.modelFileName);
+      const embedUri = await getPresentModelUri(
+        DEFAULT_EMBED_MODEL.modelFileName,
+        DEFAULT_EMBED_MODEL.artifacts[0]?.sizeBytes ?? 0
+      );
       if (!embedUri) {
         setStatusMessage('Downloading memory model…');
         for (const artifact of DEFAULT_EMBED_MODEL.artifacts) {
@@ -211,6 +343,9 @@ function useAssistantWorkspace() {
         await embedder.initEmbedder(getModelArtifactUri(DEFAULT_EMBED_MODEL.modelFileName));
       }
       setStatusMessage(`Ready — ${bundle.label}.`);
+
+      // All done — discard the saved snapshot.
+      await clearDownloadSnapshot();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : `Failed to download ${bundle.label}.`);
     } finally {
@@ -223,13 +358,17 @@ function useAssistantWorkspace() {
   const loadCatalogModel = async (bundle: RuntimeModelBundle) => {
     setActionError(null);
     try {
-      const modelUri = await getPresentModelUri(bundle.modelFileName);
+      const modelArtifact = bundle.artifacts.find((a) => a.fileName === bundle.modelFileName);
+      const modelUri = await getPresentModelUri(bundle.modelFileName, modelArtifact?.sizeBytes ?? 0);
       if (!modelUri) {
         setActionError(`${bundle.label} not downloaded yet.`);
         return;
       }
+      const mmprojArtifact = bundle.mmprojFileName
+        ? bundle.artifacts.find((a) => a.fileName === bundle.mmprojFileName)
+        : undefined;
       const mmprojUri = bundle.mmprojFileName
-        ? (await getPresentModelUri(bundle.mmprojFileName)) ?? undefined
+        ? (await getPresentModelUri(bundle.mmprojFileName, mmprojArtifact?.sizeBytes ?? 0)) ?? undefined
         : undefined;
       await model.initModel(modelUri, mmprojUri);
       setActiveModelId(bundle.id);

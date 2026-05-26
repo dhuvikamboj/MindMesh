@@ -196,6 +196,29 @@ export const MODEL_CATALOG: RuntimeModelBundle[] = [
     ],
   },
 
+  // ── MiniCPM-V ─────────────────────────────────────────────────────────────────
+  {
+    id: 'minicpm-v-4.6-thinking-q4km',
+    label: 'MiniCPM-V 4.6 Thinking',
+    paramCount: '1B',
+    description: "OpenBMB's compact vision + chain-of-thought model. Thinks before answering.",
+    tags: ['vision', 'reasoning'],
+    modelFileName: 'MiniCPM-V-4_6-Thinking-Q4_K_M.gguf',
+    mmprojFileName: 'mmproj-model-f16.gguf',
+    artifacts: [
+      {
+        fileName: 'MiniCPM-V-4_6-Thinking-Q4_K_M.gguf',
+        sizeBytes: 554_660_864,
+        url: 'https://huggingface.co/openbmb/MiniCPM-V-4.6-Thinking-gguf/resolve/main/MiniCPM-V-4_6-Thinking-Q4_K_M.gguf',
+      },
+      {
+        fileName: 'mmproj-model-f16.gguf',
+        sizeBytes: 1_192_230_912,
+        url: 'https://huggingface.co/openbmb/MiniCPM-V-4.6-Thinking-gguf/resolve/main/mmproj-model-f16.gguf',
+      },
+    ],
+  },
+
   // ── SmolLM2 ───────────────────────────────────────────────────────────────────
   {
     id: 'smollm2-1.7b-instruct-q4km',
