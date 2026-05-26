@@ -18,6 +18,7 @@ import {
   extractJsonObject,
   sanitizeMetadataExtraction,
 } from '@/lib/knowledge';
+import { applyDownloadConfig } from '@/lib/downloadConfig';
 import { AGENT_TOOLS, buildAgentSystemPrompt } from '@/lib/agent';
 import { DEFAULT_EMBED_MODEL, DEFAULT_RUNTIME_MODEL, EMBED_CATALOG, MODEL_CATALOG, RuntimeModelBundle } from '@/lib/modelCatalog';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -156,6 +157,13 @@ function useAssistantWorkspace() {
     return () => sub.remove();
   }, [isDownloadingModel, downloadingModelId]);
 
+  // Apply background-downloader global config whenever the WiFi-only pref changes.
+  // Also runs on mount (after settings are loaded) to apply the persisted value.
+  useEffect(() => {
+    if (!modelSettings.isSettingsLoaded) return;
+    applyDownloadConfig(modelSettings.settings.wifiOnlyDownloads);
+  }, [modelSettings.isSettingsLoaded, modelSettings.settings.wifiOnlyDownloads]);
+
   useEffect(() => {
     if (didAutoLoadRef.current) {
       return;
@@ -189,23 +197,18 @@ function useAssistantWorkspace() {
         );
       }
 
-      // Embedding model powers semantic memory. Only fetch it once the user has
-      // committed to the app (the main model is present).
-      if (!gemmaUri) {
-        return;
-      }
+      // Load embed model if already on disk — independent of which runtime model
+      // is active. Don't auto-download here; onboarding step 3 and the embed
+      // catalog screen own that flow.
       try {
-        let embedUri = await getPresentModelUri(
+        const embedUri = await getPresentModelUri(
           DEFAULT_EMBED_MODEL.modelFileName,
           DEFAULT_EMBED_MODEL.artifacts[0]?.sizeBytes ?? 0
         );
-        if (!embedUri) {
-          for (const artifact of DEFAULT_EMBED_MODEL.artifacts) {
-            await downloadModelArtifact(artifact);
-          }
-          embedUri = getModelArtifactUri(DEFAULT_EMBED_MODEL.modelFileName);
+        if (embedUri) {
+          await embedder.initEmbedder(embedUri);
+          setActiveEmbedModelId(DEFAULT_EMBED_MODEL.id);
         }
-        await embedder.initEmbedder(embedUri);
       } catch {
         // Memory tools degrade gracefully if the embedding model is unavailable.
       }

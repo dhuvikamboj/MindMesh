@@ -103,6 +103,20 @@ export function SettingsScreen() {
             value={assistant.isEmbedderReady ? 'Loaded' : 'Off'}
             tone={assistant.isEmbedderReady ? 'success' : 'muted'}
           />
+          {/* WiFi-only download toggle */}
+          <View style={styles.toggleRow}>
+            <View style={styles.tuneInfo}>
+              <Text style={styles.tuneLabel}>WiFi only downloads</Text>
+              <Text style={styles.tuneHint}>Prevent model downloads over cellular data</Text>
+            </View>
+            <Switch
+              value={s.wifiOnlyDownloads}
+              onValueChange={(v) => updateModelSettings({ wifiOnlyDownloads: v })}
+              trackColor={{ false: palette.border, true: palette.accent }}
+              thumbColor={palette.inverse}
+            />
+          </View>
+
           <ButtonRow
             icon="list-outline"
             label="Browse model catalog…"

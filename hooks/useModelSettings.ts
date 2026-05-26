@@ -42,6 +42,12 @@ export type ModelSettings = {
   customSystemPrompt: string;
   /** Appended after the system prompt in either mode. */
   systemPromptAppend: string;
+  /**
+   * When true, model downloads are restricted to WiFi / unmetered connections.
+   * Mapped to `allowsCellularAccess: false` on iOS and `isAllowedOverMetered: false`
+   * on Android via setConfig.
+   */
+  wifiOnlyDownloads: boolean;
 };
 
 export const DEFAULT_SETTINGS: ModelSettings = {
@@ -56,6 +62,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
   systemPromptMode: 'default',
   customSystemPrompt: '',
   systemPromptAppend: '',
+  wifiOnlyDownloads: true,
 };
 
 const SETTINGS_KEY = 'model_settings';
