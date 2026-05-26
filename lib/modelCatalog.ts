@@ -62,6 +62,13 @@ export const DEFAULT_EMBED_MODEL: RuntimeModelBundle = {
   ],
 };
 
+// ── Embedding model catalog ────────────────────────────────────────────────────
+// Add additional embed models here to make them user-selectable.
+
+export const EMBED_CATALOG: RuntimeModelBundle[] = [
+  DEFAULT_EMBED_MODEL,
+];
+
 // ── Full user-selectable catalog ───────────────────────────────────────────────
 
 export const MODEL_CATALOG: RuntimeModelBundle[] = [

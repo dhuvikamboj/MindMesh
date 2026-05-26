@@ -109,6 +109,11 @@ export function SettingsScreen() {
             onPress={() => router.push('/models')}
           />
           <ButtonRow
+            icon="search-outline"
+            label="Manage embedding models…"
+            onPress={() => router.push('/embed-models')}
+          />
+          <ButtonRow
             icon="folder-open-outline"
             label="Attach custom GGUF…"
             disabled={assistant.isModelLoading}

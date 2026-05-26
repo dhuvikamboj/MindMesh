@@ -19,7 +19,7 @@ import {
   sanitizeMetadataExtraction,
 } from '@/lib/knowledge';
 import { AGENT_TOOLS, buildAgentSystemPrompt } from '@/lib/agent';
-import { DEFAULT_EMBED_MODEL, DEFAULT_RUNTIME_MODEL, MODEL_CATALOG, RuntimeModelBundle } from '@/lib/modelCatalog';
+import { DEFAULT_EMBED_MODEL, DEFAULT_RUNTIME_MODEL, EMBED_CATALOG, MODEL_CATALOG, RuntimeModelBundle } from '@/lib/modelCatalog';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import {
@@ -93,6 +93,15 @@ function useAssistantWorkspace() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadingModelId, setDownloadingModelId] = useState<string | null>(null);
   const [activeModelId, setActiveModelId] = useState<string | null>(DEFAULT_RUNTIME_MODEL.id);
+
+  // Embed-model download state (separate from runtime model to allow both to run)
+  const [isEmbedDownloading, setIsEmbedDownloading] = useState(false);
+  const [embedDownloadProgress, setEmbedDownloadProgress] = useState(0);
+  const [downloadingEmbedModelId, setDownloadingEmbedModelId] = useState<string | null>(null);
+  const [isEmbedDownloadPaused, setIsEmbedDownloadPaused] = useState(false);
+  const [activeEmbedModelId, setActiveEmbedModelId] = useState<string | null>(DEFAULT_EMBED_MODEL.id);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const activeEmbedDownloadTaskRef = useRef<any>(null);
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [pendingLinkSuggestion, setPendingLinkSuggestion] = useState<LinkSuggestion | null>(null);
@@ -318,20 +327,6 @@ function useAssistantWorkspace() {
         : undefined;
       await model.initModel(modelUri, mmprojUri);
       setActiveModelId(bundle.id);
-      setStatusMessage(`Loaded ${bundle.label}.`);
-
-      // Seed embed model silently if not present yet.
-      const embedUri = await getPresentModelUri(
-        DEFAULT_EMBED_MODEL.modelFileName,
-        DEFAULT_EMBED_MODEL.artifacts[0]?.sizeBytes ?? 0
-      );
-      if (!embedUri) {
-        setStatusMessage('Downloading memory model…');
-        for (const artifact of DEFAULT_EMBED_MODEL.artifacts) {
-          await downloadModelArtifact(artifact);
-        }
-        await embedder.initEmbedder(getModelArtifactUri(DEFAULT_EMBED_MODEL.modelFileName));
-      }
       setStatusMessage(`Ready — ${bundle.label}.`);
 
       // All done — discard the saved snapshot.
@@ -415,6 +410,86 @@ function useAssistantWorkspace() {
     setDownloadProgress(0);
     setStatusMessage(null);
     await clearDownloadSnapshot();
+  };
+
+  /** Download and initialise an embedding model. */
+  const downloadEmbedModel = async (bundle: RuntimeModelBundle) => {
+    setIsEmbedDownloading(true);
+    setDownloadingEmbedModelId(bundle.id);
+    setEmbedDownloadProgress(0);
+    setActionError(null);
+    setStatusMessage(`Downloading ${bundle.label}…`);
+
+    try {
+      const exactSizes = await prefetchArtifactSizes(bundle.artifacts);
+      const totalBytes = bundle.artifacts.reduce(
+        (sum, a) => sum + (exactSizes.get(a.fileName) ?? a.sizeBytes),
+        0
+      );
+      let completedBytes = 0;
+
+      for (const artifact of bundle.artifacts) {
+        const weight = (exactSizes.get(artifact.fileName) ?? artifact.sizeBytes) / totalBytes;
+        await downloadModelArtifact(artifact, {
+          onTaskReady: (task) => { activeEmbedDownloadTaskRef.current = task; },
+          onProgress: (progress) => {
+            const normalized = completedBytes / totalBytes + progress * weight;
+            setEmbedDownloadProgress(Math.min(1, normalized));
+          },
+        });
+        activeEmbedDownloadTaskRef.current = null;
+        completedBytes += exactSizes.get(artifact.fileName) ?? artifact.sizeBytes;
+      }
+
+      const embedUri = getModelArtifactUri(bundle.modelFileName);
+      await embedder.initEmbedder(embedUri);
+      setActiveEmbedModelId(bundle.id);
+      setStatusMessage(`${bundle.label} ready.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : `Failed to download ${bundle.label}.`);
+    } finally {
+      activeEmbedDownloadTaskRef.current = null;
+      setIsEmbedDownloadPaused(false);
+      setIsEmbedDownloading(false);
+      setDownloadingEmbedModelId(null);
+    }
+  };
+
+  const pauseEmbedDownload = async () => {
+    try {
+      await activeEmbedDownloadTaskRef.current?.pause();
+      setIsEmbedDownloadPaused(true);
+    } catch { /* ignore */ }
+  };
+
+  const resumeEmbedDownload = async () => {
+    try {
+      await activeEmbedDownloadTaskRef.current?.resume();
+      setIsEmbedDownloadPaused(false);
+    } catch { /* ignore */ }
+  };
+
+  const cancelEmbedDownload = async () => {
+    try { await activeEmbedDownloadTaskRef.current?.stop(); } catch { /* ignore */ }
+    activeEmbedDownloadTaskRef.current = null;
+    setIsEmbedDownloading(false);
+    setDownloadingEmbedModelId(null);
+    setIsEmbedDownloadPaused(false);
+    setEmbedDownloadProgress(0);
+    setStatusMessage(null);
+  };
+
+  /** Delete downloaded files for an embedding model. */
+  const deleteEmbedModelFiles = async (bundle: RuntimeModelBundle) => {
+    try {
+      for (const artifact of bundle.artifacts) {
+        await FileSystem.deleteAsync(getModelArtifactUri(artifact.fileName), { idempotent: true });
+      }
+      if (activeEmbedModelId === bundle.id) setActiveEmbedModelId(null);
+      setStatusMessage(`Deleted ${bundle.label}.`);
+    } catch {
+      setActionError(`Failed to delete ${bundle.label} files.`);
+    }
   };
 
   // Keep backward-compat alias used by onboarding / old code paths.
@@ -1126,5 +1201,17 @@ function useAssistantWorkspace() {
     cancelDownload,
     loadCatalogModel,
     deleteModelFiles,
+    // Embed models
+    embedCatalog: EMBED_CATALOG,
+    activeEmbedModelId,
+    isEmbedDownloading,
+    embedDownloadProgress,
+    downloadingEmbedModelId,
+    isEmbedDownloadPaused,
+    downloadEmbedModel,
+    pauseEmbedDownload,
+    resumeEmbedDownload,
+    cancelEmbedDownload,
+    deleteEmbedModelFiles,
   };
 }

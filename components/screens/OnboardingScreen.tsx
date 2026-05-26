@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAssistant } from '@/contexts/AssistantContext';
 import { getDb } from '@/lib/db';
-import { MODEL_CATALOG, RuntimeModelBundle } from '@/lib/modelCatalog';
+import { DEFAULT_EMBED_MODEL, MODEL_CATALOG, RuntimeModelBundle } from '@/lib/modelCatalog';
 import { palette, radius, space } from '@/lib/theme';
 
 function formatBytes(bytes: number): string {
@@ -30,7 +30,7 @@ const TAG_COLOR: Record<string, string> = {
   default: palette.accent,
 };
 
-type Step = 'welcome' | 'name' | 'model' | 'done';
+type Step = 'welcome' | 'name' | 'model' | 'embed' | 'done';
 
 export function OnboardingScreen() {
   const router = useRouter();
@@ -95,7 +95,7 @@ export function OnboardingScreen() {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.content}>
-          <Text style={styles.stepLabel}>Step 1 of 2</Text>
+          <Text style={styles.stepLabel}>Step 1 of 3</Text>
           <Text style={styles.headline}>What's your name?</Text>
           <Text style={styles.body}>
             MindMesh uses this to personalise your profile. You can update it anytime in Settings.
@@ -132,7 +132,7 @@ export function OnboardingScreen() {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.content}>
-          <Text style={styles.stepLabel}>Step 2 of 2</Text>
+          <Text style={styles.stepLabel}>Step 2 of 3</Text>
           <Text style={styles.headline}>Choose AI model</Text>
           <Text style={styles.body}>
             All models run fully on-device. Pick one — you can switch anytime in Settings.
@@ -233,10 +233,127 @@ export function OnboardingScreen() {
           ) : null}
 
           <Pressable
-            style={[styles.primaryButton, !modelReady && styles.primaryButtonMuted]}
+            style={styles.primaryButton}
+            onPress={() => setStep('embed')}>
+            <Text style={styles.primaryButtonText}>
+              {modelReady ? 'Next →' : 'Skip — set up memory'}
+            </Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ─── Step: embed ──────────────────────────────────────────────────────────────
+
+  if (step === 'embed') {
+    const embedReady = assistant.isEmbedderReady;
+    const embedDownloading = assistant.isEmbedDownloading;
+    const embedPaused = assistant.isEmbedDownloadPaused;
+    const embedBytes = DEFAULT_EMBED_MODEL.artifacts.reduce((s, a) => s + a.sizeBytes, 0);
+
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={styles.content}>
+          <Text style={styles.stepLabel}>Step 3 of 3</Text>
+          <Text style={styles.headline}>Set up memory</Text>
+          <Text style={styles.body}>
+            MindMesh needs a small embedding model to power semantic search, memory recall,
+            and smart note linking. It runs fully on-device.
+          </Text>
+
+          {/* Embed model card */}
+          <View style={[styles.embedCard, embedReady && styles.embedCardReady]}>
+            <View style={styles.embedCardRow}>
+              <View style={[styles.embedIcon, embedReady && styles.embedIconReady]}>
+                <Ionicons
+                  name={embedReady ? 'checkmark' : 'search'}
+                  size={20}
+                  color={embedReady ? palette.success : palette.accent}
+                />
+              </View>
+              <View style={styles.embedCardText}>
+                <Text style={styles.embedName}>{DEFAULT_EMBED_MODEL.label}</Text>
+                <Text style={styles.embedMeta}>
+                  {DEFAULT_EMBED_MODEL.paramCount} · {formatBytes(embedBytes)}
+                </Text>
+                <Text style={styles.embedDesc}>{DEFAULT_EMBED_MODEL.description}</Text>
+              </View>
+            </View>
+
+            {/* Status / controls */}
+            {embedReady ? (
+              <View style={styles.embedStatus}>
+                <View style={[styles.statusDot, { backgroundColor: palette.success }]} />
+                <Text style={[styles.embedStatusText, { color: palette.success }]}>
+                  Loaded — semantic search active
+                </Text>
+              </View>
+            ) : embedDownloading ? (
+              <View style={styles.embedProgress}>
+                <View style={styles.progressTrack}>
+                  <View
+                    style={[
+                      styles.progressBar,
+                      { width: `${Math.round(assistant.embedDownloadProgress * 100)}%` },
+                    ]}
+                  />
+                </View>
+                <View style={styles.progressFooter}>
+                  <Text style={styles.progressLabel}>
+                    {embedPaused
+                      ? '⏸ Paused'
+                      : `${Math.round(assistant.embedDownloadProgress * 100)}%`}
+                    {' — '}{DEFAULT_EMBED_MODEL.label}
+                  </Text>
+                  <View style={styles.progressControls}>
+                    <Pressable
+                      style={styles.ctrlBtn}
+                      onPress={embedPaused ? assistant.resumeEmbedDownload : assistant.pauseEmbedDownload}
+                      hitSlop={8}>
+                      <Ionicons
+                        name={embedPaused ? 'play-circle' : 'pause-circle'}
+                        size={26}
+                        color={palette.accent}
+                      />
+                    </Pressable>
+                    <Pressable style={styles.ctrlBtn} onPress={assistant.cancelEmbedDownload} hitSlop={8}>
+                      <Ionicons name="stop-circle" size={26} color={palette.danger} />
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <Pressable
+                style={styles.embedDownloadBtn}
+                onPress={() => assistant.downloadEmbedModel(DEFAULT_EMBED_MODEL)}>
+                <Ionicons name="cloud-download-outline" size={16} color={palette.inverse} />
+                <Text style={styles.embedDownloadBtnText}>
+                  Download · {formatBytes(embedBytes)}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+
+          {/* Feature list */}
+          <View style={styles.featureList}>
+            {[
+              ['git-network-outline', 'Semantic search across all notes'],
+              ['bulb-outline', 'Smart auto-linking of related ideas'],
+              ['brain-outline', 'Memory recall in chat'],
+            ].map(([icon, label]) => (
+              <View key={label} style={styles.featureRow}>
+                <Ionicons name={icon as any} size={16} color={palette.accent} />
+                <Text style={styles.featureText}>{label}</Text>
+              </View>
+            ))}
+          </View>
+
+          <Pressable
+            style={[styles.primaryButton, !embedReady && !embedDownloading && styles.primaryButtonMuted]}
             onPress={markDone}>
             <Text style={styles.primaryButtonText}>
-              {modelReady ? 'Start using MindMesh' : 'Skip — download later'}
+              {embedReady ? 'Start using MindMesh' : 'Skip — set up later'}
             </Text>
           </Pressable>
         </View>
@@ -345,6 +462,47 @@ const styles = StyleSheet.create({
   modelCardText: { flex: 1 },
   modelName: { fontSize: 16, fontWeight: '700', color: palette.text },
   modelMeta: { fontSize: 12, color: palette.textSubtle, marginTop: 2 },
+  // Embed card
+  embedCard: {
+    backgroundColor: palette.surface,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: palette.border,
+    padding: space.md,
+    gap: space.md,
+  },
+  embedCardReady: { borderColor: palette.success },
+  embedCardRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.md },
+  embedIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.pill,
+    backgroundColor: palette.accentOn,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  embedIconReady: { backgroundColor: palette.successSoft },
+  embedCardText: { flex: 1, gap: 2 },
+  embedName: { fontSize: 14, fontWeight: '700', color: palette.text },
+  embedMeta: { fontSize: 12, color: palette.textMuted },
+  embedDesc: { fontSize: 12, color: palette.textMuted, lineHeight: 16, marginTop: 2 },
+  embedStatus: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  embedStatusText: { fontSize: 13, fontWeight: '600' },
+  embedProgress: { gap: 6 },
+  embedDownloadBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: palette.accent,
+    borderRadius: radius.md,
+    paddingVertical: 10,
+    paddingHorizontal: space.md,
+    alignSelf: 'flex-start',
+  },
+  embedDownloadBtnText: { color: palette.inverse, fontSize: 14, fontWeight: '700' },
+
   progressWrap: { gap: 8 },
   progressTrack: {
     height: 6,

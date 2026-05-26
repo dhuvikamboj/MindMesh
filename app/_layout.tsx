@@ -27,6 +27,7 @@ export default function RootLayout() {
             <Stack.Screen name="item/[id]" />
             <Stack.Screen name="onboarding" />
             <Stack.Screen name="models" />
+            <Stack.Screen name="embed-models" />
           </Stack>
           </ShareIntentProvider>
         </AssistantProvider>
