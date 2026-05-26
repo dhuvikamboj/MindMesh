@@ -102,8 +102,11 @@ function useAssistantWorkspace() {
     availableImages: string[];
   } | null>(null);
   const imageAttachResolveRef = useRef<((uris: string[]) => void) | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const activeDownloadTaskRef = useRef<any>(null);
   const didAutoLoadRef = useRef(false);
   const didResumeCheckRef = useRef(false);
+  const [isDownloadPaused, setIsDownloadPaused] = useState(false);
 
   // Auto-resume any download that was interrupted by an app kill or crash.
   useEffect(() => {
@@ -246,7 +249,7 @@ function useAssistantWorkspace() {
     setDownloadingModelId(bundle.id);
     setDownloadProgress(0);
     setActionError(null);
-    const hasPartial = snapshot?.artifacts.some((a) => !a.completed && a.resumeData);
+    const hasPartial = snapshot?.artifacts.some((a) => !a.completed);
     setStatusMessage(hasPartial ? `Resuming ${bundle.label}…` : `Downloading ${bundle.label}…`);
 
     try {
@@ -260,15 +263,13 @@ function useAssistantWorkspace() {
       );
       let completedBytes = 0;
 
-      // Build or restore per-artifact state from snapshot.
-      const artifactStates = bundle.artifacts.map((a, i) => ({
+      const artifactStates = bundle.artifacts.map((a) => ({
         fileName: a.fileName,
         sizeBytes: exactSizes.get(a.fileName) ?? a.sizeBytes,
-        completed: snapshot?.artifacts[i]?.completed ?? false,
-        resumeData: snapshot?.artifacts[i]?.resumeData,
+        completed: snapshot?.artifacts.find((s) => s.fileName === a.fileName)?.completed ?? false,
       }));
 
-      // Persist initial snapshot so a crash/kill is recoverable.
+      // Persist snapshot so UI can restore progress on foreground.
       await saveDownloadSnapshot({
         bundleId: bundle.id,
         bundleLabel: bundle.label,
@@ -276,15 +277,13 @@ function useAssistantWorkspace() {
         artifacts: artifactStates,
       });
 
-      const hasPartialResume = artifactStates.some((a) => !a.completed && a.resumeData);
-      setStatusMessage(hasPartialResume ? `Resuming ${bundle.label}…` : `Downloading ${bundle.label}…`);
+      setStatusMessage(`Downloading ${bundle.label}…`);
 
       for (let i = 0; i < bundle.artifacts.length; i++) {
         const artifact = bundle.artifacts[i];
         const state = artifactStates[i];
 
         if (state.completed) {
-          // Already done in a prior run — skip, count bytes.
           completedBytes += state.sizeBytes;
           setDownloadProgress(Math.min(1, completedBytes / totalBytes));
           continue;
@@ -292,26 +291,17 @@ function useAssistantWorkspace() {
 
         const weight = state.sizeBytes / totalBytes;
 
+        // Native background downloader handles resume automatically.
         await downloadModelArtifact(artifact, {
-          resumeData: state.resumeData,
+          onTaskReady: (task) => { activeDownloadTaskRef.current = task; },
           onProgress: (progress) => {
             const normalized = completedBytes / totalBytes + progress * weight;
             setDownloadProgress(Math.min(1, normalized));
           },
-          onSavable: async (resumeData) => {
-            artifactStates[i].resumeData = resumeData;
-            await saveDownloadSnapshot({
-              bundleId: bundle.id,
-              bundleLabel: bundle.label,
-              totalBytes,
-              artifacts: artifactStates,
-            });
-          },
         });
+        activeDownloadTaskRef.current = null; // artifact done
 
-        // Mark complete and persist.
         artifactStates[i].completed = true;
-        artifactStates[i].resumeData = undefined;
         completedBytes += state.sizeBytes;
         setDownloadProgress(Math.min(1, completedBytes / totalBytes));
         await saveDownloadSnapshot({
@@ -349,6 +339,8 @@ function useAssistantWorkspace() {
     } catch (error) {
       setActionError(error instanceof Error ? error.message : `Failed to download ${bundle.label}.`);
     } finally {
+      activeDownloadTaskRef.current = null;
+      setIsDownloadPaused(false);
       setIsDownloadingModel(false);
       setDownloadingModelId(null);
     }
@@ -390,6 +382,39 @@ function useAssistantWorkspace() {
     } catch {
       setActionError(`Failed to delete ${bundle.label} files.`);
     }
+  };
+
+  const pauseDownload = async () => {
+    try {
+      await activeDownloadTaskRef.current?.pause();
+      setIsDownloadPaused(true);
+    } catch {
+      // ignore
+    }
+  };
+
+  const resumeDownload = async () => {
+    try {
+      await activeDownloadTaskRef.current?.resume();
+      setIsDownloadPaused(false);
+    } catch {
+      // ignore
+    }
+  };
+
+  const cancelDownload = async () => {
+    try {
+      await activeDownloadTaskRef.current?.stop();
+    } catch {
+      // ignore
+    }
+    activeDownloadTaskRef.current = null;
+    setIsDownloadingModel(false);
+    setDownloadingModelId(null);
+    setIsDownloadPaused(false);
+    setDownloadProgress(0);
+    setStatusMessage(null);
+    await clearDownloadSnapshot();
   };
 
   // Keep backward-compat alias used by onboarding / old code paths.
@@ -1090,11 +1115,15 @@ function useAssistantWorkspace() {
     isImporting,
     isEnrichingId,
     isDownloadingModel,
+    isDownloadPaused,
     downloadProgress,
     downloadingModelId,
     activeModelId,
     modelCatalog: MODEL_CATALOG,
     downloadModel,
+    pauseDownload,
+    resumeDownload,
+    cancelDownload,
     loadCatalogModel,
     deleteModelFiles,
   };

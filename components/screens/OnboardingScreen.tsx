@@ -192,9 +192,27 @@ export function OnboardingScreen() {
                   style={[styles.progressBar, { width: `${Math.round(assistant.downloadProgress * 100)}%` }]}
                 />
               </View>
-              <Text style={styles.progressLabel}>
-                {Math.round(assistant.downloadProgress * 100)}% — {selectedBundle.label}
-              </Text>
+              <View style={styles.progressFooter}>
+                <Text style={styles.progressLabel}>
+                  {assistant.isDownloadPaused ? '⏸ Paused' : `${Math.round(assistant.downloadProgress * 100)}%`}
+                  {' — '}{selectedBundle.label}
+                </Text>
+                <View style={styles.progressControls}>
+                  <Pressable
+                    style={styles.ctrlBtn}
+                    onPress={assistant.isDownloadPaused ? assistant.resumeDownload : assistant.pauseDownload}
+                    hitSlop={8}>
+                    <Ionicons
+                      name={assistant.isDownloadPaused ? 'play-circle' : 'pause-circle'}
+                      size={26}
+                      color={palette.accent}
+                    />
+                  </Pressable>
+                  <Pressable style={styles.ctrlBtn} onPress={assistant.cancelDownload} hitSlop={8}>
+                    <Ionicons name="stop-circle" size={26} color={palette.danger} />
+                  </Pressable>
+                </View>
+              </View>
             </View>
           ) : loading ? (
             <View style={styles.loadingRow}>
@@ -327,7 +345,7 @@ const styles = StyleSheet.create({
   modelCardText: { flex: 1 },
   modelName: { fontSize: 16, fontWeight: '700', color: palette.text },
   modelMeta: { fontSize: 12, color: palette.textSubtle, marginTop: 2 },
-  progressWrap: { gap: 6 },
+  progressWrap: { gap: 8 },
   progressTrack: {
     height: 6,
     borderRadius: radius.pill,
@@ -335,7 +353,14 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   progressBar: { height: '100%', backgroundColor: palette.accent, borderRadius: radius.pill },
-  progressLabel: { fontSize: 12, color: palette.textSubtle, textAlign: 'right' },
+  progressFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  progressLabel: { fontSize: 12, color: palette.textSubtle, flex: 1 },
+  progressControls: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  ctrlBtn: { padding: 2 },
   loadingRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   loadingText: { fontSize: 14, color: palette.accent, fontWeight: '600' },
   readyText: { fontSize: 14, color: palette.success, fontWeight: '700' },

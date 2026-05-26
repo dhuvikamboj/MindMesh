@@ -1,4 +1,9 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import {
+  createDownloadTask,
+  getExistingDownloadTasks,
+  completeHandler,
+} from '@kesha-antonov/react-native-background-downloader';
 
 import { DEFAULT_RUNTIME_MODEL, ModelArtifact } from '@/lib/modelCatalog';
 import {
@@ -16,20 +21,25 @@ export const ensureModelDirectory = async () => {
 
 export const getModelArtifactUri = (fileName: string) => `${storagePaths.models}/${fileName}`;
 
-/** Absolute floor — file must be at least this big to even check further. */
+/** Absolute floor — file must be at least this big to count as real. */
 const MIN_FLOOR_BYTES = 1024 * 1024;
-/** Tolerance when falling back to catalog estimate (not server-reported size). */
-const ESTIMATE_TOLERANCE = 0.10;
+/**
+ * Tolerance for comparing against catalog sizeBytes (display estimates, not exact).
+ * 10 % absorbs rounding while still catching clearly partial files.
+ */
+const SIZE_TOLERANCE = 0.10;
 
 function isArtifactComplete(actualBytes: number, expectedBytes: number): boolean {
   if (actualBytes < MIN_FLOOR_BYTES) return false;
   if (!expectedBytes) return actualBytes >= MIN_FLOOR_BYTES;
-  return actualBytes >= expectedBytes * (1 - ESTIMATE_TOLERANCE);
+  return actualBytes >= expectedBytes * (1 - SIZE_TOLERANCE);
 }
 
+// ── Remote size fetch ─────────────────────────────────────────────────────────
+
 /**
- * Fetch the exact Content-Length for a URL via HTTP HEAD.
- * Returns 0 if the server doesn't support it or the request fails.
+ * Fetch exact Content-Length via HTTP HEAD.
+ * Returns 0 if server doesn't support it or request fails.
  */
 export const fetchRemoteFileSize = async (url: string): Promise<number> => {
   try {
@@ -41,14 +51,31 @@ export const fetchRemoteFileSize = async (url: string): Promise<number> => {
   }
 };
 
-// ── Download snapshot — persists across kills for resume ──────────────────────
+// ── Prefetch exact artifact sizes in parallel ─────────────────────────────────
+
+/**
+ * Fire HEAD requests for all artifacts in parallel and return a map of
+ * fileName → exact byte count (falls back to catalog estimate if server
+ * doesn't respond).
+ */
+export const prefetchArtifactSizes = async (
+  artifacts: ModelArtifact[]
+): Promise<Map<string, number>> => {
+  const entries = await Promise.all(
+    artifacts.map(async (a) => {
+      const size = await fetchRemoteFileSize(a.url);
+      return [a.fileName, size || a.sizeBytes] as const;
+    })
+  );
+  return new Map(entries);
+};
+
+// ── Download snapshot — persists bundle state for UI progress restore ─────────
 
 export type ArtifactDownloadState = {
   fileName: string;
   sizeBytes: number;
   completed: boolean;
-  /** Serialised DownloadResumable state from task.savable().resumeData */
-  resumeData?: string;
 };
 
 export type DownloadSnapshot = {
@@ -71,118 +98,89 @@ export const clearDownloadSnapshot = () =>
 
 export type DownloadArtifactOptions = {
   onProgress?: (progress: number) => void;
-  /** Resume data from a previous interrupted download. */
-  resumeData?: string;
-  /**
-   * Called periodically with the latest DownloadResumable snapshot so the
-   * caller can persist it for cross-session resume.  Throttled internally to
-   * avoid excessive I/O (fires at most once every 5 s).
-   */
-  onSavable?: (resumeData: string | undefined) => void;
+  /** Called as soon as the native task handle is available (new or reconnected). */
+  onTaskReady?: (task: ReturnType<typeof createDownloadTask>) => void;
 };
 
+/**
+ * Download a single model artifact using the native background downloader.
+ * - Resumes any existing background task for this artifact automatically.
+ * - Download survives app backgrounding and app kills (iOS NSURLSession /
+ *   Android DownloadManager).
+ */
 export const downloadModelArtifact = async (
   artifact: ModelArtifact,
   options: DownloadArtifactOptions = {}
 ): Promise<string> => {
-  const { onProgress, resumeData, onSavable } = options;
+  const { onProgress, onTaskReady } = options;
 
   await ensureModelDirectory();
   const destination = getModelArtifactUri(artifact.fileName);
 
-  // Resolve exact file size from server; fall back to catalog estimate.
+  // Resolve exact size from server; fall back to catalog estimate.
   const remoteBytes = await fetchRemoteFileSize(artifact.url);
-  const knownBytes = remoteBytes || artifact.sizeBytes;
+  let knownBytes = remoteBytes || artifact.sizeBytes;
 
-  const existing = await FileSystem.getInfoAsync(destination, { size: true });
-
-  if (existing.exists) {
-    if (isArtifactComplete(existing.size ?? 0, knownBytes)) {
-      onProgress?.(1);
-      return destination;
-    }
-    // Stale / corrupt partial — only wipe if we have no resume data.
-    if (!resumeData) {
-      await FileSystem.deleteAsync(destination, { idempotent: true });
-    }
+  // Skip if already complete.
+  const existing = await FileSystem.getInfoAsync(destination, { size: true } as never);
+  const existingSize = (existing as { size?: number }).size ?? 0;
+  if (existing.exists && isArtifactComplete(existingSize, knownBytes)) {
+    onProgress?.(1);
+    return destination;
   }
 
-  // Savable throttle state.
-  let lastSaveMs = 0;
+  // Use artifact fileName as the stable task ID.
+  const taskId = artifact.fileName;
 
-  // We need the task reference inside the progress callback — declare first.
-  let task!: FileSystem.DownloadResumable;
+  return new Promise<string>((resolve, reject) => {
+    const attachHandlers = (task: ReturnType<typeof createDownloadTask>) => {
+      onTaskReady?.(task);
+      task
+        .begin(({ expectedBytes }) => {
+          // Update knownBytes if server provides a more accurate value.
+          if (expectedBytes > 0) knownBytes = expectedBytes;
+        })
+        .progress(({ bytesDownloaded, bytesTotal }) => {
+          const total = bytesTotal || knownBytes;
+          if (total) onProgress?.(bytesDownloaded / total);
+        })
+        .done(() => {
+          completeHandler(taskId);
+          onProgress?.(1);
+          resolve(destination); // destination already has file:// prefix
+        })
+        .error(({ error }) => {
+          reject(new Error(`Failed to download ${artifact.fileName}: ${error}`));
+        });
+    };
 
-  const handleProgress = (event: FileSystem.DownloadProgressData) => {
-    // Prefer server-reported total; fall back to knownBytes from HEAD.
-    const total = event.totalBytesExpectedToWrite || knownBytes;
-    if (!total) return;
-    onProgress?.(event.totalBytesWritten / total);
+    // Reconnect to any existing background task for this artifact.
+    getExistingDownloadTasks().then((existingTasks) => {
+      const existing = existingTasks.find((t) => t.id === taskId);
 
-    if (onSavable) {
-      const now = Date.now();
-      if (now - lastSaveMs >= 5000) {
-        lastSaveMs = now;
-        try {
-          onSavable(task.savable().resumeData);
-        } catch {
-          // savable() can throw if task is in terminal state — ignore.
+      if (existing) {
+        attachHandlers(existing);
+        if (existing.state === 'PAUSED') {
+          existing.resume().catch(() => {
+            reject(new Error(`Failed to resume download for ${artifact.fileName}`));
+          });
         }
+        // If DOWNLOADING, just re-attached handlers — events will fire naturally.
+        return;
       }
-    }
-  };
 
-  task = FileSystem.createDownloadResumable(
-    artifact.url,
-    destination,
-    { sessionType: FileSystem.FileSystemSessionType.BACKGROUND },
-    handleProgress,
-    resumeData
-  );
+      // No existing task — start fresh.
+      const task = createDownloadTask({
+        id: taskId,
+        url: artifact.url,
+        destination: destination.replace('file://', ''),
+        metadata: { sizeBytes: knownBytes },
+      });
 
-  const result = await task.downloadAsync();
-  if (!result?.uri) {
-    throw new Error(`Failed to download ${artifact.fileName}.`);
-  }
-
-  if (result.status < 200 || result.status >= 300) {
-    await FileSystem.deleteAsync(destination, { idempotent: true });
-    throw new Error(`Failed to download ${artifact.fileName} (HTTP ${result.status}).`);
-  }
-
-  const downloaded = await FileSystem.getInfoAsync(destination, { size: true } as never);
-  const downloadedSize = (downloaded as { size?: number }).size ?? 0;
-  // If we got exact size from server HEAD, validate tightly (1 %).
-  // Otherwise just check the floor — catalog estimate too rough for strict check.
-  const sizeOk = remoteBytes
-    ? downloadedSize >= remoteBytes * 0.99
-    : downloadedSize >= MIN_FLOOR_BYTES;
-  if (!downloaded.exists || !sizeOk) {
-    await FileSystem.deleteAsync(destination, { idempotent: true });
-    throw new Error(`Downloaded ${artifact.fileName} is incomplete or invalid.`);
-  }
-
-  onProgress?.(1);
-  return result.uri;
-};
-
-// ── Prefetch exact artifact sizes in parallel ─────────────────────────────────
-
-/**
- * Fire HEAD requests for all artifacts in parallel and return a map of
- * fileName → exact byte count (0 if server doesn't respond).
- * Use before starting a multi-artifact download for accurate progress weighting.
- */
-export const prefetchArtifactSizes = async (
-  artifacts: ModelArtifact[]
-): Promise<Map<string, number>> => {
-  const entries = await Promise.all(
-    artifacts.map(async (a) => {
-      const size = await fetchRemoteFileSize(a.url);
-      return [a.fileName, size || a.sizeBytes] as const;
-    })
-  );
-  return new Map(entries);
+      attachHandlers(task);
+      task.start();
+    }).catch(reject);
+  });
 };
 
 // ── Presence check ────────────────────────────────────────────────────────────
@@ -192,8 +190,9 @@ export const getPresentModelUri = async (
   expectedBytes = 0
 ): Promise<string | null> => {
   const uri = getModelArtifactUri(fileName);
-  const info = await FileSystem.getInfoAsync(uri, { size: true });
-  if (info.exists && isArtifactComplete(info.size ?? 0, expectedBytes)) {
+  const info = await FileSystem.getInfoAsync(uri, { size: true } as never);
+  const size = (info as { size?: number }).size ?? 0;
+  if (info.exists && isArtifactComplete(size, expectedBytes)) {
     return uri;
   }
   return null;

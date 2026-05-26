@@ -33,6 +33,7 @@
     },
     "plugins": [
       "expo-router",
+      "@kesha-antonov/react-native-background-downloader",
       [
         "expo-splash-screen",
         {

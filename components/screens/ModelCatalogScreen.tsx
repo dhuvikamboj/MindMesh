@@ -61,20 +61,28 @@ type CardProps = {
   bundle: RuntimeModelBundle;
   isActive: boolean;
   isDownloading: boolean;
+  isPaused: boolean;
   downloadProgress: number;
   onDownload: () => void;
   onLoad: () => void;
   onDelete: () => void;
+  onPause: () => void;
+  onResume: () => void;
+  onCancel: () => void;
 };
 
 function ModelCard({
   bundle,
   isActive,
   isDownloading,
+  isPaused,
   downloadProgress,
   onDownload,
   onLoad,
   onDelete,
+  onPause,
+  onResume,
+  onCancel,
 }: CardProps) {
   const [downloaded, setDownloaded] = useState(false);
 
@@ -130,6 +138,19 @@ function ModelCard({
                 <View style={[styles.progressFill, { width: `${Math.round(downloadProgress * 100)}%` }]} />
               </View>
               <Text style={styles.progressText}>{Math.round(downloadProgress * 100)}%</Text>
+              <Pressable
+                style={styles.btnIconSm}
+                onPress={isPaused ? onResume : onPause}
+                hitSlop={8}>
+                <Ionicons
+                  name={isPaused ? 'play' : 'pause'}
+                  size={13}
+                  color={palette.accent}
+                />
+              </Pressable>
+              <Pressable style={styles.btnIconSmDanger} onPress={onCancel} hitSlop={8}>
+                <Ionicons name="close" size={13} color={palette.danger} />
+              </Pressable>
             </View>
           ) : downloaded ? (
             <>
@@ -199,10 +220,14 @@ export function ModelCatalogScreen() {
         bundle={item}
         isActive={assistant.activeModelId === item.id}
         isDownloading={assistant.isDownloadingModel && assistant.downloadingModelId === item.id}
+        isPaused={assistant.isDownloadPaused}
         downloadProgress={assistant.downloadProgress}
         onDownload={() => handleDownload(item)}
         onLoad={() => handleLoad(item)}
         onDelete={() => handleDelete(item)}
+        onPause={assistant.pauseDownload}
+        onResume={assistant.resumeDownload}
+        onCancel={assistant.cancelDownload}
       />
     ),
     [assistant, handleDownload, handleLoad, handleDelete],
@@ -409,6 +434,23 @@ const styles = StyleSheet.create({
   btnDanger: {
     width: 32,
     height: 32,
+    borderRadius: radius.pill,
+    backgroundColor: palette.dangerSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  btnIconSm: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.pill,
+    backgroundColor: palette.accentOn,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnIconSmDanger: {
+    width: 28,
+    height: 28,
     borderRadius: radius.pill,
     backgroundColor: palette.dangerSoft,
     alignItems: 'center',
